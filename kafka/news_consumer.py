@@ -73,7 +73,14 @@ def get_existing_urls(s3_client):
 def upload_to_s3(s3_client, article):
     """Upload a single article to S3 as a JSON file with URL metadata"""
     timestamp = datetime.utcnow().strftime("%Y/%m/%d/%H%M%S")
-    safe_title = article.get("title", "untitled")[:50].replace("/", "-").replace(" ", "_")
+    safe_title = article.get("title", "untitled")[:50]\
+        .replace("/", "-")\
+        .replace(" ", "_")\
+        .replace(":", "-")\
+        .replace("'", "")\
+        .replace(",", "")\
+        .replace("?", "")\
+        .replace("!", "")
     filename = f"bronze/news/{timestamp}_{safe_title}.json"
 
     s3_client.put_object(
