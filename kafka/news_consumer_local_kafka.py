@@ -1,3 +1,7 @@
+# NOTE: This consumer was used with local Kafka setup (Phase 1)
+# Replaced by Spark Streaming notebook (02_spark_streaming) 
+# which reads from Confluent Cloud and writes directly to Bronze Delta table
+
 import json
 import boto3
 import os
