@@ -16,13 +16,19 @@ schema = StructType([
   StructField("author", StringType(), True)
   ])
 
-df = spark.read.schema(schema).option("recursiveFileLookup", "true").json("s3a://news-intelligence-platform-bronze/bronze/news/")
+BRONZE_PATH = "s3a://news-intelligence-platform-bronze/bronze/news_delta/"
+
+# df = spark.read.schema(schema).option("recursiveFileLookup", "true").json("s3a://news-intelligence-platform-bronze/bronze/news/")
+df=spark.read.format("delta").load(BRONZE_PATH)
 print(f"Total articles: {df.count()}")
 # df.show(5, truncate=False)
 
 # COMMAND ----------
 
 from pyspark.sql.functions import col, to_timestamp, trim, upper, when, length
+from delta.tables import DeltaTable
+
+silver_path = "s3a://news-intelligence-platform-bronze/silver/news/"
 
 # ── Silver Layer Transformations ──
 
@@ -36,28 +42,29 @@ silver_df = df \
     .withColumn("content_length", length(col("content"))) \
     .withColumn("has_content", when(col("content").isNotNull(), True).otherwise(False))
 
+# Check if Silver table already exists
+if DeltaTable.isDeltaTable(spark, silver_path):
+    # MERGE - upsert new records
+    delta_table = DeltaTable.forPath(spark, silver_path)
+    delta_table.alias("existing") \
+        .merge(
+            silver_df.alias("new"),
+            "existing.url = new.url"  # match on URL
+        ) \
+        .whenNotMatchedInsertAll().execute()
+    print(f"Silver table updated with MERGE! And the count is: {delta_table.toDF().count()}")
+else:
+    # First time - just write
+    silver_df.write.format("delta").mode("overwrite").save(silver_path)
+    print(f"Silver table created! And the count is: {spark.read.format('delta').load(silver_path).count()}")
+
 print(f"Bronze count: {df.count()}")
-print(f"Silver count: {silver_df.count()}")
-silver_df.show(5, truncate=True)
-
-# COMMAND ----------
-
-silver_path='s3a://news-intelligence-platform-bronze/silver/news/'
-
-silver_df.write \
-    .format("delta") \
-    .mode("overwrite") \
-    .save(silver_path)
-
-print("Silver Delta table saved successfully!")
-
-silver_verify = spark.read.format("delta").load(silver_path)
-print(f"Silver Delta table verified: {silver_verify.count()}")
-
+# silver_df.show(5, truncate=True)
 
 # COMMAND ----------
 
 from pyspark.sql.functions import avg, count, min, max, round
+silver_df=spark.read.format("delta").load(silver_path)
 
 # ── Gold Layer: Articles by Source ──
 
@@ -69,11 +76,35 @@ gold_by_source = silver_df \
           max("published_at").alias("latest_article")
     ).orderBy(col("total_articles").desc())
 
-gold_by_source.show(10, truncate=False)
+gold_source_path = "s3a://news-intelligence-platform-bronze/gold/by_source/"
+
+if DeltaTable.isDeltaTable(spark, gold_source_path):
+    delta_table = DeltaTable.forPath(spark, gold_source_path)
+    delta_table.alias("existing") \
+        .merge(
+            gold_by_source.alias("new"),
+            "existing.source = new.source"
+        ) \
+        .whenMatchedUpdateAll()\
+        .whenNotMatchedInsertAll()\
+        .execute()
+    print(f"Gold by_source updated with MERGE! And the count is: {delta_table.toDF().count()}")
+else:
+    gold_by_source.write.format("delta").mode("overwrite").save(gold_source_path)
+    print(f"Gold by_source created! And the count is: {gold_by_source.count()}")
+
+# COMMAND ----------
+
+# Read gold_by_source and check total_articles
+gold_check = spark.read.format("delta").load("s3a://news-intelligence-platform-bronze/gold/by_source/")
+from pyspark.sql.functions import sum as _sum; gold_check.agg(_sum("total_articles").alias("total_articles_sum")).show()
 
 # COMMAND ----------
 
 from pyspark.sql.functions import count, max, min, avg, round, year, month, dayofmonth, date_trunc
+
+gold_date_path = "s3a://news-intelligence-platform-bronze/gold/by_date/"
+
 
 # ── Gold Table 2: Articles by Date ──
 gold_by_date = silver_df \
@@ -85,7 +116,23 @@ gold_by_date = silver_df \
     ) \
     .orderBy(col("date").desc())
 
-gold_by_date.show(10, truncate=False)
+
+# # gold_by_date_clean = gold_by_date.drop("year", "month")
+
+if DeltaTable.isDeltaTable(spark, gold_date_path):
+    delta_table = DeltaTable.forPath(spark, gold_date_path)
+    delta_table.alias("existing") \
+        .merge(
+            gold_by_date.alias("new"),
+            "existing.date = new.date"
+        ) \
+        .whenMatchedUpdateAll()\
+        .whenNotMatchedInsertAll()\
+        .execute()
+    print(f"Gold by_date updated with MERGE! And the count is: {delta_table.toDF().count()}")
+else:
+    gold_by_date.write.format("delta").mode("overwrite").save(gold_date_path)
+    print(f"Gold by_date created! And the count is: {gold_by_date.count()}")
 
 
 # COMMAND ----------
@@ -100,47 +147,22 @@ gold_by_author = silver_df \
     ) \
     .orderBy(col("total_articles").desc())
 
-gold_by_author.show(10, truncate=False)
-
-# COMMAND ----------
-
-from pyspark.sql.functions import year, month, dayofmonth
-
-# ── Save Gold Table 1: By Source ──
-gold_source_path = "s3a://news-intelligence-platform-bronze/gold/by_source/"
-
-gold_by_source.write \
-    .format("delta") \
-    .mode("overwrite") \
-    .save(gold_source_path)
-
-print("Gold by_source saved!")
-
-# ── Save Gold Table 2: By Date ──
-gold_date_path = "s3a://news-intelligence-platform-bronze/gold/by_date/"
-
-gold_by_date \
-    .withColumn("year", year(col("date"))) \
-    .withColumn("month", month(col("date"))) \
-    .write \
-    .format("delta") \
-    .mode("overwrite") \
-    .partitionBy("year", "month") \
-    .save(gold_date_path)
-
-print("Gold by_date saved!")
-
-# ── Save Gold Table 3: By Author ──
 gold_author_path = "s3a://news-intelligence-platform-bronze/gold/by_author/"
 
-gold_by_author.write \
-    .format("delta") \
-    .mode("overwrite") \
-    .save(gold_author_path)
-
-print("Gold by_author saved!")
-
-print("\nAll Gold tables saved successfully!")
+if DeltaTable.isDeltaTable(spark, gold_author_path):
+    delta_table = DeltaTable.forPath(spark, gold_author_path)
+    delta_table.alias("existing") \
+        .merge(
+            gold_by_author.alias("new"),
+            "existing.author = new.author"
+        ) \
+        .whenMatchedUpdateAll()\
+        .whenNotMatchedInsertAll()\
+        .execute()
+    print(f"Gold by_author updated with MERGE! And the count is: {delta_table.toDF().count()}")
+else:
+    gold_by_author.write.format("delta").mode("overwrite").save(gold_author_path)
+    print(f"Gold by_author created! And the count is: {gold_by_author.count()}")
 
 # COMMAND ----------
 
