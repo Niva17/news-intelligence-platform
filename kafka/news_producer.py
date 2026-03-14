@@ -9,7 +9,9 @@ load_dotenv()
 
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 KAFKA_TOPIC = "raw_news"
-KAFKA_BROKER = "127.0.0.1:9092"
+CONFLUENT_BOOTSTRAP_SERVERS = os.getenv("CONFLUENT_BOOTSTRAP_SERVERS")
+CONFLUENT_API_KEY = os.getenv("CONFLUENT_API_KEY")
+CONFLUENT_API_SECRET = os.getenv("CONFLUENT_API_SECRET")
 
 def fetch_news():
     """Fetch latest news articles from NewsAPI"""
@@ -39,9 +41,13 @@ def delivery_report(err, msg):
 def create_producer():
     """Create and return a Kafka producer"""
     producer = Producer({
-        "bootstrap.servers": KAFKA_BROKER,
+        "bootstrap.servers": CONFLUENT_BOOTSTRAP_SERVERS,
+        "security.protocol": "SASL_SSL",
+        "sasl.mechanism": "PLAIN",
+        "sasl.username": CONFLUENT_API_KEY,
+        "sasl.password": CONFLUENT_API_SECRET,
         "socket.timeout.ms": 10000,
-        "message.timeout.ms": 10000
+        "message.timeout.ms": 30000
     })
     return producer
 
