@@ -1,0 +1,32 @@
+version: 2
+
+models:
+  - name: stg_news_silver
+    description: "Cleaned and deduplicated news articles from Silver Delta table"
+    columns:
+      - name: url
+        description: "Unique URL of the article"
+        tests:
+          - unique
+          - not_null
+      - name: title
+        description: "Title of the article"
+        tests:
+          - not_null
+      - name: source
+        description: "News source name"
+        tests:
+          - not_null
+      - name: published_at
+        description: "Publication timestamp"
+        tests:
+          - not_null
+
+  - name: stg_news_sources
+    description: "Unique news sources with article counts"
+    columns:
+      - name: source
+        description: "News source name"
+        tests:
+          - unique
+          - not_null
